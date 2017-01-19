@@ -8,12 +8,11 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 const Datastore = require("nedb");
-var dbconfig;
 const nedbPool_1 = require("./nedbPool");
+var dbconfig;
 class NeDBDataContext {
     constructor(config) {
         this.transList = [];
-        this.dbLinks = [];
         this.config = config;
         dbconfig = config;
         if (!config.IsMulitTabel) {
@@ -21,30 +20,27 @@ class NeDBDataContext {
             this.nedb.loadDatabase();
         }
     }
-    Create(obj, stillOpen) {
+    Create(obj) {
         return __awaiter(this, void 0, void 0, function* () {
-            if (stillOpen == undefined || stillOpen == null)
-                stillOpen = true;
             delete obj.ctx;
-            let promise = new Promise((resolve, reject) => {
-                this.createInner(obj, stillOpen).then((r) => {
-                    this.pushQuery("create", obj);
-                    resolve(r);
-                })
-                    .catch(err => {
-                    if (err.errorType == "uniqueViolated") {
-                        reject({ code: -101, message: "插入失败：重复的主键id" });
-                    }
-                    else
-                        reject(err);
-                });
-            });
-            return promise;
+            try {
+                let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
+                let r = yield this.CreateInner(obj, db);
+                this.PushQuery("create", { id: obj.id });
+                return r;
+            }
+            catch (err) {
+                if (err.errorType == "uniqueViolated") {
+                    throw { code: -101, message: "插入失败：重复的主键id" };
+                }
+                else {
+                    throw err;
+                }
+            }
         });
     }
-    createInner(obj, stillOpen) {
+    CreateInner(obj, db) {
         return __awaiter(this, void 0, void 0, function* () {
-            let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
             return new Promise((resolve, reject) => {
                 db.insert(obj, (err, r) => {
                     if (err)
@@ -56,53 +52,33 @@ class NeDBDataContext {
             });
         });
     }
-    UpdateRange(list, stillOpen) {
+    UpdateRange(list) {
         return __awaiter(this, void 0, void 0, function* () {
-            if (stillOpen == undefined || stillOpen == null)
-                stillOpen = true;
             let entityList = [];
-            return new Promise((resolve, reject) => {
-                try {
-                    for (var index = 0, l = list.length; index < l; index++) {
-                        var element = list[index];
-                        this.Update(element).then(v => {
-                            entityList.push(v);
-                            if (entityList.length == l) {
-                                resolve(entityList);
-                            }
-                        }).catch(err => { new Error(err); });
-                    }
-                }
-                catch (error) {
-                    reject(error);
-                }
-            });
+            for (let item of list) {
+                let v = yield this.Update(item);
+                entityList.push(v);
+            }
+            return entityList;
         });
     }
-    Update(obj, stillOpen) {
+    Update(obj) {
         return __awaiter(this, void 0, void 0, function* () {
-            if (stillOpen == undefined || stillOpen == null)
-                stillOpen = true;
             delete obj.ctx;
+            let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
             let entity;
             if (this.transOn) {
-                entity = yield this.getEntity(obj.toString(), obj.id, stillOpen);
+                entity = yield this.GetEntity(obj.toString(), obj.id, db);
                 entity.toString = obj.toString;
             }
-            return new Promise((resolve, reject) => {
-                this.UpdateInner(obj, stillOpen).then(r => {
-                    this.pushQuery("update", entity);
-                    resolve(r);
-                }).catch(err => {
-                    reject(err);
-                });
-            });
+            let r = yield this.UpdateInner(obj, db);
+            this.PushQuery("update", entity);
+            return r;
         });
     }
-    UpdateInner(obj, stillOpen) {
+    UpdateInner(obj, db) {
         return __awaiter(this, void 0, void 0, function* () {
             delete obj._id;
-            let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
             return new Promise((resolve, reject) => {
                 db.update({ id: obj.id }, obj, { upsert: true }, (err, numReplaced, upsert) => {
                     if (err) {
@@ -115,9 +91,8 @@ class NeDBDataContext {
             });
         });
     }
-    getEntity(name, id, stillOpen) {
+    GetEntity(tableName, id, db) {
         return __awaiter(this, void 0, void 0, function* () {
-            let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(name, this.config);
             return new Promise((resolve, reject) => {
                 db.findOne({ id: id }, (err, r) => {
                     if (err)
@@ -128,39 +103,29 @@ class NeDBDataContext {
             });
         });
     }
-    Delete(obj, stillOpen) {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (stillOpen == undefined || stillOpen == null)
-                stillOpen = true;
-            let entity;
-            if (this.transOn) {
-                entity = yield this.getEntity(obj.toString(), obj.id, stillOpen);
-                entity.toString = obj.toString;
-            }
-            let promise = new Promise((resolve, reject) => {
-                this.deleteInner(obj, stillOpen).then(() => {
-                    this.pushQuery("delete", entity);
-                    resolve(true);
-                }).catch(err => {
-                    reject(err);
-                });
-            });
-            return promise;
-        });
-    }
-    deleteInner(obj, stillOpen) {
+    Delete(obj) {
         return __awaiter(this, void 0, void 0, function* () {
             let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
-            let promise = new Promise((resolve, reject) => {
+            let entity;
+            if (this.transOn) {
+                entity = yield this.GetEntity(obj.toString(), obj.id, db);
+                entity.toString = obj.toString;
+            }
+            yield this.DeleteInner(obj, db);
+            this.PushQuery("delete", entity);
+            return true;
+        });
+    }
+    DeleteInner(obj, db) {
+        return __awaiter(this, void 0, void 0, function* () {
+            return new Promise((resolve, reject) => {
                 db.remove({ id: obj.id }, {}, (err, numRemoved) => {
                     if (err)
                         reject(err);
-                    else {
+                    else
                         resolve(true);
-                    }
                 });
             });
-            return promise;
         });
     }
     BeginTranscation() {
@@ -239,6 +204,9 @@ class NeDBDataContext {
                                 resolve(r);
                         });
                         break;
+                    default:
+                        reject("未知的QueryMode!");
+                        break;
                 }
             });
             return promise;
@@ -250,22 +218,23 @@ class NeDBDataContext {
                 try {
                     for (let index = this.transList.length - 1; index >= 0; index--) {
                         let item = this.transList[index];
-                        console.log(item);
+                        let db = yield nedbPool_1.NeDBPool.Current.GetDBConnection(item.entity.toString(), this.config);
                         switch (item.key) {
                             case "create":
-                                yield this.deleteInner(item.entity);
+                                yield this.DeleteInner(item.entity, db);
                                 break;
                             case "update":
-                                yield this.UpdateInner(item.entity);
+                                yield this.UpdateInner(item.entity, db);
                                 break;
                             case "delete":
-                                yield this.createInner(item.entity);
+                                yield this.CreateInner(item.entity, db);
                                 break;
+                            default: throw "未知的回滚类型！";
                         }
                     }
                 }
                 catch (error) {
-                    console.log("回滚失败");
+                    console.log("回滚失败", error);
                 }
                 finally {
                     this.transList = [];
@@ -273,7 +242,7 @@ class NeDBDataContext {
             }
         });
     }
-    pushQuery(key, obj) {
+    PushQuery(key, obj) {
         if (this.transOn) {
             this.transList.push({
                 key: key,
@@ -283,7 +252,6 @@ class NeDBDataContext {
     }
 }
 exports.NeDBDataContext = NeDBDataContext;
-let timer;
 var QueryMode;
 (function (QueryMode) {
     QueryMode[QueryMode["Normal"] = 0] = "Normal";

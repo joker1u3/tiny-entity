@@ -1,8 +1,8 @@
 import Datastore = require("nedb");
 import { DBOpenWorker, OpenWorkerManager } from "./dbOpenWorker";
 import { IEntityObject, IDataContext } from '../tinyDB';
-var dbconfig;
 import { NeDBPool } from './nedbPool';
+var dbconfig;
 
 export class NeDBDataContext implements IDataContext {
     private nedb: Datastore;
@@ -18,28 +18,23 @@ export class NeDBDataContext implements IDataContext {
         }
     }
 
-    async Create(obj: IEntityObject, stillOpen?: boolean): Promise<Object> {
-        if (stillOpen == undefined || stillOpen == null) stillOpen = true;
+    async Create(obj: IEntityObject): Promise<Object> {
         delete (obj as any).ctx;
-        let promise = new Promise((resolve, reject) => {
-            this.createInner(obj, stillOpen).then((r) => {
-                //添加事务的记录
-                this.pushQuery("create", obj);
-                resolve(r);
-            })
-                .catch(err => {
-                    if (err.errorType == "uniqueViolated") {
-                        reject({ code: -101, message: "插入失败：重复的主键id" });
-                    } else
-                        reject(err);
-                })
-        });
-
-        return promise;
+        try {
+            let db = await NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
+            let r = await this.CreateInner(obj, db);
+            this.PushQuery("create", { id: obj.id });
+            return r;
+        }
+        catch (err) {
+            if (err.errorType == "uniqueViolated") {
+                throw { code: -101, message: "插入失败：重复的主键id" };
+            } else {
+                throw err;
+            }
+        }
     }
-    private async createInner(obj: IEntityObject, stillOpen?) {
-        // let db = await this.Open(obj.toString(), stillOpen);
-        let db = await NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
+    private async CreateInner(obj: IEntityObject, db: Datastore): Promise<any> {
         return new Promise((resolve, reject) => {
             db.insert(obj, (err, r) => {
                 if (err) reject(err);
@@ -50,51 +45,31 @@ export class NeDBDataContext implements IDataContext {
         });
     }
 
-    async UpdateRange(list: [IEntityObject], stillOpen?: boolean) {
-        if (stillOpen == undefined || stillOpen == null) stillOpen = true;
+    async UpdateRange(list: [IEntityObject]) {
         let entityList = [];
-        return new Promise((resolve, reject) => {
-            try {
-                for (var index = 0, l = list.length; index < l; index++) {
-                    var element = list[index];
-                    this.Update(element).then(v => {
-                        entityList.push(v);
-                        if (entityList.length == l) {
-                            resolve(entityList)
-                        }
-                    }).catch(err => { new Error(err); });
-                }
-
-            } catch (error) {
-                reject(error);
-            }
-
-        });
-    }
-
-    async Update(obj: IEntityObject, stillOpen?: boolean) {
-        if (stillOpen == undefined || stillOpen == null) stillOpen = true;
-        delete (obj as any).ctx;
-        let entity;
-        if (this.transOn) {
-            entity = await this.getEntity(obj.toString(), obj.id, stillOpen);
-            entity.toString = obj.toString;
+        for (let item of list) {
+            let v = await this.Update(item);
+            entityList.push(v);
         }
 
-        return new Promise((resolve, reject) => {
-            this.UpdateInner(obj, stillOpen).then(r => {
-                this.pushQuery("update", entity);
-                resolve(r);
-            }).catch(err => {
-                reject(err);
-            })
-        });
+        return entityList;
     }
-    private async UpdateInner(obj: IEntityObject, stillOpen?) {
-        delete (<any>obj)._id;
-        // let db = await this.Open(obj.toString(), stillOpen);
-        let db = await NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
 
+    async Update(obj: IEntityObject) {
+        delete (obj as any).ctx;
+        let db = await NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
+        let entity;
+        if (this.transOn) {
+            entity = await this.GetEntity(obj.toString(), obj.id, db);
+            entity.toString = obj.toString;
+        }
+        let r = await this.UpdateInner(obj, db);
+        this.PushQuery("update", entity);
+        return r;
+    }
+
+    private async UpdateInner(obj: IEntityObject, db: Datastore) {
+        delete (<any>obj)._id;
         return new Promise((resolve, reject) => {
             db.update({ id: obj.id }, obj, { upsert: true }, (err, numReplaced: number, upsert) => {
                 if (err) {
@@ -107,9 +82,7 @@ export class NeDBDataContext implements IDataContext {
         })
     }
 
-    private async getEntity(name, id, stillOpen) {
-        // let db = await this.Open(name, stillOpen);
-        let db = await NeDBPool.Current.GetDBConnection(name, this.config);
+    private async GetEntity(tableName: string, id, db: Datastore) {
         return new Promise((resolve, reject) => {
             db.findOne({ id: id }, (err, r) => {
                 if (err) reject(err);
@@ -118,40 +91,25 @@ export class NeDBDataContext implements IDataContext {
         });
     }
 
-    async Delete(obj: IEntityObject, stillOpen?: boolean): Promise<boolean> {
-        if (stillOpen == undefined || stillOpen == null) stillOpen = true;
+    async Delete(obj: IEntityObject): Promise<boolean> {
+        let db = await NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
         let entity;
         if (this.transOn) {
-            entity = await this.getEntity(obj.toString(), obj.id, stillOpen);
+            entity = await this.GetEntity(obj.toString(), obj.id, db);
             entity.toString = obj.toString;
         }
-
-        let promise = new Promise<boolean>((resolve, reject) => {
-            this.deleteInner(obj, stillOpen).then(() => {
-                this.pushQuery("delete", entity);
-                resolve(true);
-            }).catch(err => {
-                reject(err);
-            });
-        });
-
-        return promise;
+        await this.DeleteInner(obj, db);
+        this.PushQuery("delete", entity);
+        return true;
     }
-    private async deleteInner(obj: IEntityObject, stillOpen?) {
-        // let db = await this.Open(obj.toString(), stillOpen);
-        let db = await NeDBPool.Current.GetDBConnection(obj.toString(), this.config);
-        let promise = new Promise<boolean>((resolve, reject) => {
+    private async DeleteInner(obj: IEntityObject, db: Datastore) {
+        return new Promise<boolean>((resolve, reject) => {
             db.remove({ id: obj.id }, {}, (err, numRemoved) => {
                 if (err) reject(err);
-                else {
-                    resolve(true);
-                }
+                else resolve(true);
             });
         });
-
-        return promise;
     }
-
 
     BeginTranscation() {
         this.transOn = true;
@@ -164,8 +122,7 @@ export class NeDBDataContext implements IDataContext {
         };
     }
     async Query(qFn: [((p) => Boolean)], tableName: string, queryMode?: QueryMode, orderByFn?, inqObj?): Promise<any> {
-        if (queryMode == undefined || queryMode == null) queryMode = QueryMode.Normal
-        // let db = await this.Open(tableName);
+        if (queryMode == undefined || queryMode == null) queryMode = QueryMode.Normal;
         let db = await NeDBPool.Current.GetDBConnection(tableName, this.config);
         let promise = new Promise((resolve, reject) => {
             let queryFn = {};
@@ -219,42 +176,42 @@ export class NeDBDataContext implements IDataContext {
                         else resolve(r);
                     });
                     break;
+
+                default: reject("未知的QueryMode!"); break;
             }
         });
 
         return promise;
     }
 
-    private dbLinks = [];
-
     async RollBack() {
         if (this.transOn) {
             try {
                 for (let index = this.transList.length - 1; index >= 0; index--) {
                     let item = this.transList[index];
-                    console.log(item);
-
+                    let db = await NeDBPool.Current.GetDBConnection(item.entity.toString(), this.config);
                     switch (item.key) {
                         case "create":
-                            await this.deleteInner(item.entity);
+                            await this.DeleteInner(item.entity, db);
                             break;
                         case "update":
-                            await this.UpdateInner(item.entity);
+                            await this.UpdateInner(item.entity, db);
                             break;
                         case "delete":
-                            await this.createInner(item.entity);
+                            await this.CreateInner(item.entity, db);
                             break;
+                        default: throw "未知的回滚类型！";
                     }
                 }
             } catch (error) {
-                console.log("回滚失败");
+                console.log("回滚失败", error);
             }
             finally {
                 this.transList = [];
             }
         }
     }
-    private pushQuery(key, obj) {
+    private PushQuery(key, obj) {
         if (this.transOn) {
             this.transList.push({
                 key: key,
@@ -264,15 +221,12 @@ export class NeDBDataContext implements IDataContext {
     }
 }
 
-let timer;
-
 export enum QueryMode {
     Normal,
     First,
     Count,
     Contains
 }
-
 export interface ContextConfig {
     IsMulitTabel?: boolean;
     FilePath: string;

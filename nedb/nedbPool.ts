@@ -12,22 +12,19 @@ export class NeDBPool {
         this.list = [];
     }
     static Current: NeDBPool = new NeDBPool();
-    GetDBConnection(tbName: string, config: ContextConfig): Promise<Datastore> {
+    async GetDBConnection(tbName: string, config: ContextConfig): Promise<Datastore> {
         let db: Datastore = null;
         let connStr = config.FilePath + tbName + ".db";
         let item = this.list.find(x => x.connStr == connStr);
 
-        return new Promise((resolve, reject) => {
-            if (item) {
-                resolve(item.db);
-            }
-            else {
-                this.Open(connStr).then(db => {
-                    this.list.push({ connStr: connStr, db: db });
-                    resolve(db);
-                }).catch(err => { reject(err) });
-            }
-        });
+        if (item) {
+            return item.db;
+        }
+        else {
+            db = await this.Open(connStr);
+            this.list.push({ connStr: connStr, db: db });
+            return db;
+        }
     }
 
     private Open(connStr: string): Promise<Datastore> {

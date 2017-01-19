@@ -1,4 +1,12 @@
 "use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : new P(function (resolve) { resolve(result.value); }).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments)).next());
+    });
+};
 const dbOpenWorker_1 = require("./dbOpenWorker");
 const Datastore = require("nedb");
 class NeDBPool {
@@ -6,18 +14,17 @@ class NeDBPool {
         this.list = [];
     }
     GetDBConnection(tbName, config) {
-        let db = null;
-        let connStr = config.FilePath + tbName + ".db";
-        let item = this.list.find(x => x.connStr == connStr);
-        return new Promise((resolve, reject) => {
+        return __awaiter(this, void 0, void 0, function* () {
+            let db = null;
+            let connStr = config.FilePath + tbName + ".db";
+            let item = this.list.find(x => x.connStr == connStr);
             if (item) {
-                resolve(item.db);
+                return item.db;
             }
             else {
-                this.Open(connStr).then(db => {
-                    this.list.push({ connStr: connStr, db: db });
-                    resolve(db);
-                }).catch(err => { reject(err); });
+                db = yield this.Open(connStr);
+                this.list.push({ connStr: connStr, db: db });
+                return db;
             }
         });
     }
